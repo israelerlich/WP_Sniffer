@@ -4,135 +4,156 @@ import re
 import argparse
 import json
 from colorama import init, Fore
-from typing import Dict, Set, Tuple
 
 init(autoreset=True)
 
 class WPScanner:
-    HEADERS = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-    }
-    
-    def __init__(self, url: str, api_token: str = None, local_db: str = 'vulnerabilities.json'):
+    def __init__(self, url, api_token=None):
         self.url = url.rstrip('/')
         self.api_token = api_token
-        self.plugins: Dict[str, str] = {}
-        self.local_vulnerabilities = self._load_json(local_db)
+        self.plugins = {}
+        self.vulnerabilities = self.carregar_vulnerabilidades()
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
 
-    @staticmethod
-    def _load_json(filepath: str) -> dict:
+    def carregar_vulnerabilidades(self):
         try:
-            with open(filepath, 'r') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
+            with open('vulnerabilities.json', 'r') as arquivo:
+                return json.load(arquivo)
+        except:
             return {}
 
-    def detect_wordpress(self, soup: BeautifulSoup) -> bool:
+    def detectar_wordpress(self, soup):
+        # Procura pela tag meta generator
         generator = soup.find('meta', attrs={'name': 'generator'})
-        return (generator and 'WordPress' in generator.get('content', '')) or \
-               bool(soup.find(href=re.compile(r'wp-content')) or soup.find(src=re.compile(r'wp-content')))
-
-    def scan_plugins(self, soup: BeautifulSoup):
-        print(f"{Fore.CYAN}[*] Scanning for plugins...")
-        plugin_pattern = re.compile(r'wp-content/plugins/([^/]+)/')
-        tags = soup.find_all(['script', 'link', 'img', 'a'], src=True) + soup.find_all(['link', 'a'], href=True)
-        
-        found: Set[str] = set()
-        for tag in tags:
-            url = tag.get('src') or tag.get('href')
-            if url and (match := plugin_pattern.search(url)) and match.group(1) not in found:
-                plugin_name = match.group(1)
-                found.add(plugin_name)
-                version = re.search(r'ver=([\d\.]+)', url)
-                self.plugins[plugin_name] = version.group(1) if version else 'Unknown'
-                print(f"{Fore.GREEN}[+] Found: {plugin_name} (v{self.plugins[plugin_name]})")
-
-    def check_vulnerabilities(self):
-        print(f"\n{Fore.CYAN}[*] Checking vulnerabilities...")
-        if not self.plugins:
-            return print(f"{Fore.YELLOW}[-] No plugins found.")
-
-        use_api = bool(self.api_token)
-        if not use_api:
-            print(f"{Fore.YELLOW}[!] No API token. Using local database.")
-
-        found_vuln = any(
-            self._check_api(p, v) or self._check_local(p, v) if use_api else self._check_local(p, v)
-            for p, v in self.plugins.items()
-        )
-        
-        if not found_vuln:
-            print(f"{Fore.GREEN}[+] No vulnerabilities found.")
-
-    def _check_api(self, plugin: str, version: str) -> bool:
-        print(f"{Fore.BLUE}[*] Checking {plugin} via API...")
-        try:
-            response = requests.get(
-                f"https://wpscan.com/api/v3/plugins/{plugin}",
-                headers={'Authorization': f'Token token={self.api_token}'},
-                timeout=10
-            )
-            
-            if response.status_code == 429:
-                print(f"{Fore.RED}[!] API rate limit. Trying local DB...")
-                return False
-            
-            if response.status_code != 200:
-                return False
-
-            vulnerabilities = response.json().get(plugin, {}).get('vulnerabilities', [])
-            return self._print_vulnerabilities(plugin, version, vulnerabilities, "API")
-        except requests.exceptions.RequestException:
-            return False
-
-    def _check_local(self, plugin: str, version: str) -> bool:
-        if plugin not in self.local_vulnerabilities:
-            return False
-        
-        vuln_info = self.local_vulnerabilities[plugin]
-        if version == 'Unknown' or version in vuln_info.get('versions', []):
-            color = Fore.YELLOW if version == 'Unknown' else Fore.RED
-            status = "Potential" if version == 'Unknown' else "FOUND"
-            print(f"{color}[!] {status} vulnerability in {plugin}: {vuln_info['description']}")
-            print(f"    {color}Severity: {vuln_info['severity']}")
+        if generator and 'WordPress' in generator.get('content', ''):
             return True
+        
+        # Procura por links do wp-content
+        if soup.find(href=re.compile(r'wp-content')) or soup.find(src=re.compile(r'wp-content')):
+            return True
+        
         return False
 
-    def _print_vulnerabilities(self, plugin: str, version: str, vulns: list, source: str) -> bool:
-        found = False
-        for vuln in vulns:
-            fixed_in = vuln.get('fixed_in')
-            is_vulnerable = version == 'Unknown' or not fixed_in or version < fixed_in
-            
-            if is_vulnerable:
-                print(f"{Fore.RED}[!] VULNERABILITY ({source}): {plugin} {version}")
-                print(f"    {Fore.RED}Title: {vuln.get('title')}")
-                print(f"    {Fore.RED}Fixed in: {fixed_in or 'Not fixed'}")
-                found = True
-        return found
-
-    def run(self):
-        print(f"{Fore.BLUE}[*] Starting scan: {self.url}")
-        try:
-            response = requests.get(self.url, headers=self.HEADERS, timeout=10)
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            return print(f"{Fore.RED}[!] Connection error: {e}")
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-        print(f"{Fore.GREEN}[+] WordPress detected!" if self.detect_wordpress(soup) 
-              else f"{Fore.YELLOW}[!] WordPress not detected. Continuing...")
+    def buscar_plugins(self, soup):
+        print(f"{Fore.CYAN}[*] Procurando plugins...")
+        encontrados = set()
         
-        self.scan_plugins(soup)
-        self.check_vulnerabilities()
+        # Busca todas as tags que podem ter plugins
+        tags = soup.find_all(['script', 'link', 'img', 'a'])
+        
+        for tag in tags:
+            url = tag.get('src') or tag.get('href')
+            if url:
+                # Procura padrão wp-content/plugins/nome-do-plugin/
+                match = re.search(r'wp-content/plugins/([^/]+)/', url)
+                if match:
+                    plugin_nome = match.group(1)
+                    if plugin_nome not in encontrados:
+                        encontrados.add(plugin_nome)
+                        
+                        # Tenta pegar a versão
+                        versao_match = re.search(r'ver=([\d\.]+)', url)
+                        versao = versao_match.group(1) if versao_match else 'Desconhecida'
+                        
+                        self.plugins[plugin_nome] = versao
+                        print(f"{Fore.GREEN}[+] Encontrado: {plugin_nome} (v{versao})")
+
+    def verificar_vulnerabilidades(self):
+        print(f"\n{Fore.CYAN}[*] Verificando vulnerabilidades...")
+        
+        if not self.plugins:
+            print(f"{Fore.YELLOW}[-] Nenhum plugin encontrado.")
+            return
+        
+        encontrou_vuln = False
+        
+        for plugin, versao in self.plugins.items():
+            # Tenta API primeiro se tiver token
+            if self.api_token:
+                if self.verificar_api(plugin, versao):
+                    encontrou_vuln = True
+                    continue
+            
+            # Usa banco local
+            if self.verificar_local(plugin, versao):
+                encontrou_vuln = True
+        
+        if not encontrou_vuln:
+            print(f"{Fore.GREEN}[+] Nenhuma vulnerabilidade encontrada.")
+
+    def verificar_api(self, plugin, versao):
+        print(f"{Fore.BLUE}[*] Consultando API para {plugin}...")
+        try:
+            url = f"https://wpscan.com/api/v3/plugins/{plugin}"
+            headers = {'Authorization': f'Token token={self.api_token}'}
+            resposta = requests.get(url, headers=headers, timeout=10)
+            
+            if resposta.status_code == 429:
+                print(f"{Fore.RED}[!] Limite de requisições atingido.")
+                return False
+            
+            if resposta.status_code != 200:
+                return False
+            
+            dados = resposta.json()
+            vulns = dados.get(plugin, {}).get('vulnerabilities', [])
+            
+            for vuln in vulns:
+                print(f"{Fore.RED}[!] VULNERABILIDADE (API): {plugin} {versao}")
+                print(f"    {Fore.RED}Título: {vuln.get('title')}")
+                print(f"    {Fore.RED}Corrigido em: {vuln.get('fixed_in', 'Não corrigido')}")
+            
+            return len(vulns) > 0
+        except:
+            return False
+
+    def verificar_local(self, plugin, versao):
+        if plugin not in self.vulnerabilities:
+            return False
+        
+        info = self.vulnerabilities[plugin]
+        versoes_vuln = info.get('versions', [])
+        
+        if versao == 'Desconhecida' or versao in versoes_vuln:
+            cor = Fore.YELLOW if versao == 'Desconhecida' else Fore.RED
+            status = "Possível" if versao == 'Desconhecida' else "ENCONTRADA"
+            print(f"{cor}[!] {status} vulnerabilidade em {plugin}: {info['description']}")
+            print(f"    {cor}Severidade: {info['severity']}")
+            return True
+        
+        return False
+
+    def executar(self):
+        print(f"{Fore.BLUE}[*] Iniciando scan: {self.url}")
+        
+        try:
+            resposta = requests.get(self.url, headers=self.headers, timeout=10)
+            resposta.raise_for_status()
+        except Exception as e:
+            print(f"{Fore.RED}[!] Erro de conexão: {e}")
+            return
+        
+        soup = BeautifulSoup(resposta.text, 'html.parser')
+        
+        if self.detectar_wordpress(soup):
+            print(f"{Fore.GREEN}[+] WordPress detectado!")
+        else:
+            print(f"{Fore.YELLOW}[!] WordPress não detectado. Continuando...")
+        
+        self.buscar_plugins(soup)
+        self.verificar_vulnerabilidades()
 
 def main():
-    parser = argparse.ArgumentParser(description="WordPress Plugin Vulnerability Scanner")
-    parser.add_argument("url", help="Target URL")
-    parser.add_argument("--api-token", help="WPScan API Token", default=None)
+    parser = argparse.ArgumentParser(description="Scanner de Vulnerabilidades WordPress")
+    parser.add_argument("url", help="URL do site alvo")
+    parser.add_argument("--api-token", help="Token da API WPScan", default=None)
     args = parser.parse_args()
-    WPScanner(args.url, args.api_token).run()
+    
+    scanner = WPScanner(args.url, args.api_token)
+    scanner.executar()
 
 if __name__ == "__main__":
     main()
