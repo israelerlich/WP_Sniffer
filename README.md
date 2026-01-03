@@ -47,5 +47,3 @@ Você pode adicionar vulnerabilidades manualmente no arquivo vulnerabilities.jso
 }
 ```
 
-⚠️ Aviso Legal (Disclaimer)
-ESTRITAMENTE EDUCACIONAL. O uso desta ferramenta em sites sem consentimento prévio e explícito é ilegal. O autor não se responsabiliza por danos ou uso indevido. Utilize apenas em ambientes de teste (CTF, Labs) ou infraestrutura própria.
